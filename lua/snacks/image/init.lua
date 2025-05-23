@@ -1,5 +1,4 @@
 ---@class snacks.image
----@field terminal snacks.image.terminal
 ---@field image snacks.Image
 ---@field placement snacks.image.Placement
 ---@field util snacks.image.util
@@ -10,7 +9,7 @@
 local M = setmetatable({}, {
   ---@param M snacks.image
   __index = function(M, k)
-    if vim.tbl_contains({ "terminal", "image", "placement", "util", "doc", "buf", "convert", "inline" }, k) then
+    if vim.tbl_contains({ "placement", "util", "doc", "buf", "convert", "inline" }, k) then
       M[k] = require("snacks.image." .. k)
     end
     return rawget(M, k)
@@ -214,7 +213,7 @@ end
 
 -- Check if the terminal supports the kitty graphics protocol
 function M.supports_terminal()
-  return M.terminal.env().supported or M.config.force or false
+  return vim.ui.img or M.config.force or false
 end
 
 --- Show the image at the cursor in a floating window

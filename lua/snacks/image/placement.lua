@@ -1,6 +1,7 @@
 ---@class snacks.image.Placement
----@field img snacks.Image
----@field id number image placement id
+---@field img? vim.ui.Image
+---@field _convert? snacks.image.Convert
+---@field id number
 ---@field ns number
 ---@field buf number
 ---@field opts snacks.image.Opts
@@ -17,7 +18,6 @@ M.__index = M
 
 ---@alias snacks.image.Extmark vim.api.keyset.set_extmark|{row:number, col:number}
 
-local terminal = Snacks.image.terminal
 local uv = vim.uv or vim.loop
 local ns = vim.api.nvim_create_namespace("snacks.image")
 M.ns = ns
@@ -33,6 +33,7 @@ setmetatable(positions, {
     return positions[k]
   end,
 })
+local next_id = 1
 
 ---@param buf? number
 ---@param id? number
@@ -53,9 +54,8 @@ function M.new(buf, src, opts)
   assert(type(src) == "string", "`Image.new`: src should be a string")
   Snacks.image.setup() -- always setup so that images/videos can be opened
   local self = setmetatable({}, M)
-
-  self.img = Snacks.image.image.new(src)
-  self.img:place(self)
+  self.id = next_id
+  next_id = next_id + 1
   self.opts = opts or {}
   self.opts.pos = self.opts.pos or { 1, 0 }
   self.buf = buf
@@ -84,13 +84,8 @@ function M.new(buf, src, opts)
   placements[self.buf] = placements[self.buf] or {}
   placements[self.buf][self.id] = self
 
-  if self:ready() then
-    vim.schedule(function()
-      self:update()
-    end)
-  elseif self.img:failed() then
-    self:error()
-  elseif self.opts.inline then
+
+  if self.opts.inline then
     -- temporary extmark so that we can keep track of unloaded images in the buffer
     self:_render({
       {
@@ -102,10 +97,36 @@ function M.new(buf, src, opts)
     self:progress()
   end
 
+  self._convert = Snacks.image.convert.convert({
+    src = src,
+    on_done = function(convert)
+      if convert:error() then
+        vim.schedule(function()
+          self:error()
+        end)
+      else
+        vim.schedule(function()
+          local file = self._convert.file
+          if file and vim.fn.filereadable(file) == 1 then
+            self.img = vim.ui.img.load(file):wait()
+            if self.img then
+              self:update()
+              return
+            end
+          end
+          self:error()
+        end)
+      end
+    end,
+  })
+  self._convert:run()
+
   local update = self.update
   self.update = Snacks.util.debounce(function()
     update(self)
   end, { ms = 10 })
+
+
   return self
 end
 
@@ -114,7 +135,7 @@ function M:error()
     return
   end
   local msg = "# Image Conversion Failed:\n\n"
-  local convert = self.img._convert
+  local convert = self._convert
   if convert then
     for _, step in ipairs(convert.steps) do
       if step.err then
@@ -153,7 +174,7 @@ function M:progress()
     0,
     80,
     vim.schedule_wrap(function()
-      if self:ready() or self.img:failed() or not vim.api.nvim_buf_is_valid(self.buf) then
+      if self:ready() or not vim.api.nvim_buf_is_valid(self.buf) then
         timer:stop()
         if not timer:is_closing() then
           timer:close()
@@ -165,7 +186,7 @@ function M:progress()
         virt_text = {
           { Snacks.util.spinner(), "SnacksImageSpinner" },
           { " " },
-          { self.img._convert:current().name .. " loading …", "SnacksImageLoading" },
+          { self._convert:current().name .. " loading …", "SnacksImageLoading" },
         },
       })
     end)
@@ -192,7 +213,10 @@ function M:close()
 end
 
 function M:del()
-  self.img:del(self.id)
+  if self.img and self.img:is_visible() then
+    self.img:hide():wait()
+  end
+  self.img = nil
   if vim.api.nvim_buf_is_valid(self.buf) then
     for _, eid in ipairs(self.eids) do
       vim.api.nvim_buf_del_extmark(self.buf, ns, eid)
@@ -358,17 +382,11 @@ function M:_render(extmarks)
 end
 
 function M:hide()
-  if self.hidden or not self:ready() then
-    return
-  end
   self.hidden = true
   self:update()
 end
 
 function M:show()
-  if not self.hidden or not self:ready() then
-    return
-  end
   self.hidden = false
   self:update()
 end
@@ -381,16 +399,16 @@ function M:render_fallback(state)
   for _, win in ipairs(state.wins) do
     self:debug("render_fallback", win)
     local border = setmetatable({ opts = vim.api.nvim_win_get_config(win) }, { __index = Snacks.win }):border_size()
-    local pos = vim.api.nvim_win_get_position(win)
-    terminal.set_cursor({ pos[1] + 1 + border.top, pos[2] + border.left })
-    terminal.request({
-      a = "p",
-      i = self.img.id,
-      p = self.id,
-      C = 1,
-      c = state.loc.width,
-      r = state.loc.height,
-    })
+    local y, x = unpack(vim.api.nvim_win_get_position(win))
+    -- Assuming 1-based indexing for now
+    y = y + border.top + 1
+    x = x + border.left + 1
+    self.img:show({
+      col = x,
+      row = y,
+      width = state.loc.width,
+      height = state.loc.height,
+    }):wait()
   end
 end
 
@@ -398,13 +416,13 @@ function M:debug(...)
   if true or not Snacks.image.config.debug then
     return
   end
-  Snacks.debug.inspect({ ... }, self.img.src, self.img.id, self.id)
+  --Snacks.debug.inspect({ ... }, self.img.src, self.img.id, self.id)
 end
 
 function M:state()
   local width, height = vim.o.columns, vim.o.lines
   local wins = {} ---@type number[]
-  local is_fallback = not terminal.env().placeholders
+  local is_fallback = true -- Always absolute positions for now
   local zindex = vim.api.nvim_win_get_config(0).zindex or 0
 
   for _, win in ipairs(self:wins()) do
@@ -426,7 +444,8 @@ function M:state()
 
   width = minmax(self.opts.width or width, self.opts.min_width, self.opts.max_width)
   height = minmax(self.opts.height or height, self.opts.min_height, self.opts.max_height)
-  local size = Snacks.image.util.fit(self.img.file, { width = width, height = height }, { info = self.img.info })
+  -- TODO get the information from the nvim API
+  local size = Snacks.image.util.fit(self._convert.file, { width = width, height = height }, { info = nil })
 
   local pos = self.opts.pos or { 1, 0 }
 
@@ -489,11 +508,12 @@ function M:update()
   end
   self._state = state
 
-  if #state.wins == 0 then
-    self:hide()
+  if #state.wins == 0 or self.hidden then
+    if self.img:is_visible() then
+      self.img:hide():wait()
+    end
     return
   end
-  self.img:place(self)
 
   self:debug("update")
 
@@ -503,7 +523,7 @@ function M:update()
     end
   end
 
-  if terminal.env().placeholders then
+  if false and terminal.env().placeholders then
     terminal.request({
       a = "p",
       U = 1,
@@ -531,7 +551,7 @@ function M:update()
 end
 
 function M:ready()
-  return not self.closed and self.buf and vim.api.nvim_buf_is_valid(self.buf) and self.img:ready()
+  return not self.closed and self.buf and vim.api.nvim_buf_is_valid(self.buf) and self.img
 end
 
 return M

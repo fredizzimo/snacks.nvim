@@ -251,7 +251,7 @@ function Convert.new(opts)
   self.tpl_data = {
     cache = Snacks.image.config.cache,
     bg = vim.o.background,
-    scale = tostring(Snacks.image.terminal.size().scale or 1),
+    scale = tostring(1),
   }
   self:resolve()
   return self
