@@ -1,4 +1,5 @@
 ---@class snacks.image.Placement
+---@field src string
 ---@field img? vim.ui.Image
 ---@field _convert? snacks.image.Convert
 ---@field id number
@@ -54,6 +55,7 @@ function M.new(buf, src, opts)
   assert(type(src) == "string", "`Image.new`: src should be a string")
   Snacks.image.setup() -- always setup so that images/videos can be opened
   local self = setmetatable({}, M)
+  self.src = src
   self.id = next_id
   next_id = next_id + 1
   self.opts = opts or {}

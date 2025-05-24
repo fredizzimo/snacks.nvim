@@ -356,7 +356,7 @@ function M.hover()
       return M.hover_close()
     end
 
-    if hover and hover.img.img.src ~= src then
+    if hover and hover.img.src ~= src then
       M.hover_close()
     elseif hover then
       hover.img:update()
@@ -407,7 +407,8 @@ function M.attach(buf)
     return
   end
   vim.b[buf].snacks_image_attached = true
-  local inline = Snacks.image.config.doc.inline and Snacks.image.terminal.env().placeholders
+  -- local inline = Snacks.image.config.doc.inline and Snacks.image.terminal.env().placeholders
+  local inline = false
   local float = Snacks.image.config.doc.float and not inline
 
   if not inline and not float then
