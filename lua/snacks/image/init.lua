@@ -213,7 +213,7 @@ end
 
 -- Check if the terminal supports the kitty graphics protocol
 function M.supports_terminal()
-  return vim.ui.img or M.config.force or false
+  return true
 end
 
 --- Show the image at the cursor in a floating window

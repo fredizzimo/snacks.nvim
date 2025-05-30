@@ -1,6 +1,6 @@
 ---@class snacks.image.Placement
 ---@field src string
----@field img? vim.ui.Image
+---@field img? string
 ---@field _convert? snacks.image.Convert
 ---@field id number
 ---@field ns number
@@ -109,11 +109,16 @@ function M.new(buf, src, opts)
       else
         vim.schedule(function()
           local file = self._convert.file
-          if file and vim.fn.filereadable(file) == 1 then
-            self.img = vim.ui.img.load(file):wait()
-            if self.img then
-              self:update()
-              return
+          if file then
+            local fd = io.open(file, "rb")
+            if fd then
+              local data = fd:read("*a") ---@type string
+              fd:close()
+              self.img = data
+              if self.img then
+                self:update()
+                return
+              end
             end
           end
           self:error()
@@ -215,9 +220,6 @@ function M:close()
 end
 
 function M:del()
-  if self.img and self.img:is_visible() then
-    self.img:hide():wait()
-  end
   self.img = nil
   if vim.api.nvim_buf_is_valid(self.buf) then
     for _, eid in ipairs(self.eids) do
@@ -232,7 +234,7 @@ function M:render_grid(loc)
   local hl = "SnacksImage" .. self.id -- image id is encoded in the foreground color
   Snacks.util.set_hl({
     [hl] = {
-      fg = self.img.id,
+      fg = 0,
       sp = self.id,
       bg = Snacks.image.config.debug.placement and "#FF007C" or "none",
       nocombine = true,
@@ -279,6 +281,17 @@ function M:render_grid(loc)
   end
   -- can_overlay = false
 
+  local nvim_img = vim.ui.img.create(self.img, {})
+  ---@type vim.ui.img.SizedImg
+  local placement = {
+    img = nvim_img,
+    num_cols = width,
+    num_rows = height,
+    keep_aspect = true,
+  }
+
+  local current_line = 0
+
   if height == 1 and #lines == 1 then
     -- render inline
     self:_render({
@@ -290,10 +303,18 @@ function M:render_grid(loc)
         conceal = conceal,
         invalidate = vim.fn.has("nvim-0.10") == 1 and true or nil,
         virt_text_pos = "inline",
-        virt_text = { { img[1], hl } },
+        virt_text = vim.ui.img.create_fragments(placement, {
+          start_col = 0,
+          start_row = current_line,
+          num_cols = width,
+          num_rows = 1,
+          highlight = hl
+
+        }),
         virt_text_hide = true,
       },
     })
+    current_line = 1
   elseif can_overlay then
     if conceal then
       -- conceal and overlay on the first line
@@ -304,40 +325,73 @@ function M:render_grid(loc)
         end_col = range[4],
         conceal = conceal,
         virt_text_pos = "overlay",
-        virt_text = { { table.remove(img, 1), hl } },
+        virt_text = vim.ui.img.create_fragments(placement, {
+          start_col = 0,
+          start_row = current_line,
+          num_cols = width,
+          num_rows = 1,
+          highlight = hl
+
+        }),
         virt_text_hide = false,
         virt_text_win_col = offset,
       }
+      current_line = 1
       -- overlay over the other lines
-      for i = 1, math.min(#img, #lines - 1) do
-        extmarks[#extmarks + 1] = {
-          row = range[1] - 1 + i,
-          col = 0,
-          virt_text_pos = "overlay",
-          virt_text = { { table.remove(img, 1), hl } },
-          virt_text_hide = false,
-          virt_text_win_col = offset,
-        }
-      end
+      local left = math.min(height - 1, #lines - 1)
+      -- for i = 0, left - 1 do
+      --   extmarks[#extmarks + 1] = {
+      --     row = range[1] - 1 + i,
+      --     col = 0,
+      --     virt_text_pos = "overlay",
+      --     virt_text = vim.ui.img.create_fragments(placement, {
+      --       start_col = 0,
+      --       start_row = current_line + i,
+      --       num_cols = width,
+      --       num_rows = 1,
+      --       highlight = hl
+      --
+      --     }),
+      --     virt_text_hide = false,
+      --     virt_text_win_col = offset,
+      --   }
+      -- end
+      current_line = current_line + left
     end
-    if #img > 0 then
+    local left = height - current_line
+    if left > 0 then
       -- add additional virtual lines if there are more lines to render
       local padding = string.rep(" ", offset)
-      extmarks[#extmarks + 1] = {
-        row = range[3] - 1,
-        col = 0,
-        ---@param l string
-        virt_lines = vim.tbl_map(function(l)
-          return { { padding }, { l, hl } }
-        end, img),
-        virt_text_hide = false,
-      }
+      local virt_lines = vim.ui.img.create_fragments(placement, {
+        start_col = 0,
+        start_row = current_line,
+        num_cols = width,
+        num_rows = left,
+        highlight = hl
+      })
+      -- extmarks[#extmarks + 1] = {
+      --   row = range[3] - 1,
+      --   col = 0,
+      --   ---@param l string
+      --   virt_lines = vim.tbl_map(function(l)
+      --     return { { padding }, l }
+      --   end, virt_lines),
+      --   virt_text_hide = false,
+      -- }
     end
     self:_render(extmarks)
   else
     local is_inline = has_before or has_after
     local icon = Snacks.image.config.icons[self.opts.type or "image"] or Snacks.image.config.icons.image
     -- render below in virtual lines
+    local virt_lines = vim.ui.img.create_fragments(placement, {
+      start_col = 0,
+      start_row = 0,
+      num_cols = width,
+      num_rows = height,
+      highlight = hl
+
+    })
     extmarks[#extmarks + 1] = {
       row = range[1] - 1,
       col = range[2],
@@ -347,10 +401,7 @@ function M:render_grid(loc)
       virt_text = is_inline and { { icon, "SnacksImageAnchor" } } or nil,
       virt_text_pos = "inline",
       virt_text_hide = false,
-      ---@param l string
-      virt_lines = vim.tbl_map(function(l)
-        return { { l, hl } }
-      end, img),
+      virt_lines = virt_lines
     }
     self:_render(extmarks)
   end
@@ -393,27 +444,6 @@ function M:show()
   self:update()
 end
 
----@param state snacks.image.State
-function M:render_fallback(state)
-  if not self.opts.inline then
-    vim.api.nvim_buf_clear_namespace(self.buf, ns, 0, -1)
-  end
-  for _, win in ipairs(state.wins) do
-    self:debug("render_fallback", win)
-    local border = setmetatable({ opts = vim.api.nvim_win_get_config(win) }, { __index = Snacks.win }):border_size()
-    local y, x = unpack(vim.api.nvim_win_get_position(win))
-    -- Assuming 1-based indexing for now
-    y = y + border.top + 1
-    x = x + border.left + 1
-    self.img:show({
-      col = x,
-      row = y,
-      width = state.loc.width,
-      height = state.loc.height,
-    }):wait()
-  end
-end
-
 function M:debug(...)
   if true or not Snacks.image.config.debug then
     return
@@ -424,7 +454,7 @@ end
 function M:state()
   local width, height = vim.o.columns, vim.o.lines
   local wins = {} ---@type number[]
-  local is_fallback = true -- Always absolute positions for now
+  local is_fallback = false
   local zindex = vim.api.nvim_win_get_config(0).zindex or 0
 
   for _, win in ipairs(self:wins()) do
@@ -511,9 +541,6 @@ function M:update()
   self._state = state
 
   if #state.wins == 0 or self.hidden then
-    if self.img:is_visible() then
-      self.img:hide():wait()
-    end
     return
   end
 
@@ -525,16 +552,7 @@ function M:update()
     end
   end
 
-  if false and terminal.env().placeholders then
-    terminal.request({
-      a = "p",
-      U = 1,
-      i = self.img.id,
-      p = self.id,
-      C = 1,
-      c = state.loc.width,
-      r = state.loc.height,
-    })
+  if true then
     self:render_grid(state.loc)
   else
     self:render_fallback(state)
